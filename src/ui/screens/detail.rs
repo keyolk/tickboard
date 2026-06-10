@@ -11,7 +11,7 @@ use crate::{
     config::{self, instrument_profile},
     models::{
         format_number, format_volume, ChartPeriod, Currency, InstrumentKind, InvestorRow, Market,
-        NewsItem, OrderBookEntry, StockDetail,
+        NewsItem, OrderBookEntry, StockDetail, StockQuote,
     },
     tasks::{scheduler, AppMsg},
     ui::{format, layout, theme, widgets},
@@ -63,7 +63,7 @@ impl DetailState {
         scheduler::spawn_detail_refresh(tx, self.generation, self.symbol.clone(), self.market);
     }
 
-    pub fn toggle_ai(&mut self, tx: UnboundedSender<AppMsg>) {
+    pub fn toggle_ai(&mut self, tx: UnboundedSender<AppMsg>, peers: Vec<StockQuote>) {
         if !crate::services::bedrock::is_ai_available() {
             self.ai_result = crate::services::bedrock::DISABLED_MSG.to_string();
             self.ai_visible = true;
@@ -85,7 +85,15 @@ impl DetailState {
             self.ai_visible = true;
             self.ai_result = "AI 종목 분석 로딩중...".to_string();
             let news_titles = self.news.iter().take(5).map(|n| n.title.clone()).collect();
-            scheduler::spawn_stock_ai(tx, self.generation, detail, news_titles);
+            scheduler::spawn_stock_ai(
+                tx,
+                self.generation,
+                detail,
+                self.investor_rows.clone(),
+                self.order_book.clone(),
+                peers,
+                news_titles,
+            );
         }
     }
 

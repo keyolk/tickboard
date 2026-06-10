@@ -128,19 +128,17 @@ pub fn spawn_stock_ai(
     tx: UnboundedSender<AppMsg>,
     generation: u64,
     detail: crate::models::StockDetail,
+    investor_rows: Vec<crate::models::InvestorRow>,
+    order_book: Vec<crate::models::OrderBookEntry>,
+    peers: Vec<crate::models::StockQuote>,
     news_titles: Vec<String>,
 ) {
     tokio::spawn(async move {
         let result = crate::services::bedrock::analyze_stock(
-            &detail.symbol,
-            &detail.name,
-            detail.price,
-            detail.change_pct,
-            detail.pe_ratio,
-            detail.week52_high,
-            detail.week52_low,
-            &detail.sector,
-            detail.market.as_str(),
+            &detail,
+            &investor_rows,
+            &order_book,
+            &peers,
             &news_titles,
         )
         .await;

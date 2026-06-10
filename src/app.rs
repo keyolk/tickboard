@@ -151,6 +151,7 @@ impl App {
         let mut push_detail_stock = None;
         let mut push_article_news = None;
         let mut request_inspector_symbol: Option<String> = None;
+        let mut request_ai_toggle = false;
         let mut pop_screen = false;
         match self.screens.last_mut() {
             Some(Screen::Dashboard(state)) => {
@@ -266,7 +267,7 @@ impl App {
                     KeyCode::Char('2') => state.period = crate::models::ChartPeriod::OneMonth,
                     KeyCode::Char('3') => state.period = crate::models::ChartPeriod::ThreeMonths,
                     KeyCode::Char('4') => state.period = crate::models::ChartPeriod::OneYear,
-                    KeyCode::Char('a') => state.toggle_ai(self.tx.clone()),
+                    KeyCode::Char('a') => request_ai_toggle = true,
                     KeyCode::Char('g') if key.modifiers.is_empty() => state.jump_news_start(),
                     KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                         state.jump_news_end()
@@ -314,6 +315,12 @@ impl App {
         if let Some(news) = push_article_news {
             push_article(&mut self.screens, &self.tx, news);
         }
+        if request_ai_toggle {
+            let peers = self.detail_peers();
+            if let Some(Screen::Detail(state)) = self.screens.last_mut() {
+                state.toggle_ai(self.tx.clone(), peers);
+            }
+        }
     }
 
     fn refresh_dashboard(&mut self) {
@@ -334,6 +341,41 @@ impl App {
         {
             state.refresh_news(self.tx.clone());
         }
+    }
+
+    /// Same-sector quotes from the dashboard for the stock currently shown in
+    /// the detail screen, used as the AI analysis peer comparison set.
+    fn detail_peers(&self) -> Vec<StockQuote> {
+        let Some(Screen::Detail(detail_state)) = self
+            .screens
+            .iter()
+            .rev()
+            .find(|screen| matches!(screen, Screen::Detail(_)))
+        else {
+            return Vec::new();
+        };
+        let Some(detail) = detail_state.detail.as_ref() else {
+            return Vec::new();
+        };
+        if detail.sector.is_empty() {
+            return Vec::new();
+        }
+        let Some(Screen::Dashboard(dash)) = self
+            .screens
+            .iter()
+            .find(|screen| matches!(screen, Screen::Dashboard(_)))
+        else {
+            return Vec::new();
+        };
+        let universe = match detail.market {
+            crate::models::Market::Us => &dash.us_quotes,
+            crate::models::Market::Kr => &dash.kr_quotes,
+        };
+        universe
+            .iter()
+            .filter(|quote| quote.sector.eq_ignore_ascii_case(&detail.sector))
+            .cloned()
+            .collect()
     }
 }
 
