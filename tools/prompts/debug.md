@@ -3,16 +3,17 @@
 ## Template
 버그를 진단할 때 다음 절차를 따르세요:
 
-1. **에러 로그 확인**: `cat app_errors.log`
-2. **문법 검증**: 해당 파일 `ast.parse()` 수행
-3. **import 체인 추적**: 에러 파일의 import를 하나씩 검증
+1. **재현 경로 확인**: Dashboard / Detail / Article 중 어느 화면인지 확인
+2. **빌드 검증**: `make check`
+3. **런타임 확인**: `make smoke` 또는 `RUST_LOG=debug make run`
 4. **데이터 흐름 추적**:
-   - services/ → models/ → screens/ → components/ 순서로 확인
-   - `_last_*` 캐시 변수에 데이터가 채워지는지 확인
-5. **위젯 ID 확인**: `query_one("#id")` 에서 ID가 compose()에 존재하는지
-6. **Work Group 충돌**: 같은 group에 여러 worker가 동시 실행되는지
+   - services/ → tasks/AppMsg → app state → ui/screens → ui/widgets 순서로 확인
+   - generation ID가 최신 메시지만 적용하는지 확인
+5. **외부 API 응답 확인**: 해당 service 모듈 단위로 endpoint/파싱 로직 확인
+6. **터미널 이벤트 확인**: key handling이 현재 screen stack top에 적용되는지 확인
 
 ## Common Issues
-- `NoMatches` → compose()에 해당 위젯 ID 없음
-- `AttributeError` → 데이터 로드 전 접근
-- `ConnectionError` → 네트워크 또는 API rate limit
+- 빈 테이블 → 외부 금융 endpoint 실패 또는 parser schema 변경
+- stale 데이터 표시 → generation ID mismatch 확인
+- AI 비활성 → `.env`, `AWS_PROFILE`, AWS CLI Bedrock 권한 확인
+- 터미널 깨짐 → panic/early return 후 terminal restore 경로 확인

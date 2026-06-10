@@ -1,5 +1,0 @@
-textual>=0.40.0
-yfinance>=0.2.31
-pykrx>=1.0.45
-httpx>=0.25.0
-boto3>=1.28.0

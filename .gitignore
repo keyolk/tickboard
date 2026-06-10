@@ -1,10 +1,11 @@
-__pycache__/
-*.pyc
-.venv/
 .env
 *.log
 *.svg
+target/
 .claude/settings.local.json
+
+# 런타임에 생성되는 사용자 워치리스트
+.stock-on-tui-watchlists.json
 
 # 루트의 임시 이미지 제외, screenshots/ 디렉토리는 허용
 /*.png
