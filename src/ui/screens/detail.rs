@@ -230,19 +230,23 @@ pub fn render(
     indicators: &[crate::models::EconomicIndicator],
 ) {
     let show_ai = state.ai_visible && !state.ai_result.is_empty();
+    // Density-first layout: the chart/volume/gauge get fixed budgets, but the
+    // order-book + investor "mid" row grows to fill the terminal so all ~20
+    // order-book levels and ~10 investor rows show on a tall screen. News is
+    // capped to a small fixed height instead of stealing the slack.
     let mut constraints = vec![
-        Constraint::Length(3),
-        Constraint::Length(3),
-        Constraint::Length(8),
-        Constraint::Length(9),
-        Constraint::Length(4),
-        Constraint::Length(8),
-        Constraint::Length(6),
-        Constraint::Min(6),
+        Constraint::Length(4), // header (name + price/change/volume line)
+        Constraint::Length(3), // metrics cards
+        Constraint::Length(9), // price chart
+        Constraint::Length(8), // volume chart
+        Constraint::Length(4), // range position gauges
+        Constraint::Min(14),   // order book + price/trading info + investors (grows)
+        Constraint::Length(4), // insight (related indicators + returns)
     ];
     if show_ai {
         constraints.push(Constraint::Min(8));
     }
+    constraints.push(Constraint::Length(news_height(area.height, show_ai)));
     constraints.push(Constraint::Length(1));
     let rows = layout::vertical(area, &constraints);
     render_header(
@@ -269,10 +273,11 @@ pub fn render(
     );
     render_info_and_investors(frame, mid[1], state.detail.as_ref(), &state.investor_rows);
     render_related_and_ai(frame, rows[6], state.detail.as_ref(), indicators, state);
+    let news_row = rows[7];
     let visible_news = state.visible_news();
     widgets::news_feed::render(
         frame,
-        rows[7],
+        news_row,
         &visible_news,
         state.news_selected,
         true,
@@ -298,11 +303,25 @@ pub fn render(
             rows[8],
         );
     }
-    let status_row = if show_ai { rows[9] } else { rows[8] };
+    let status_row = *rows.last().unwrap();
     frame.render_widget(
         Paragraph::new(state.status.clone()).style(Style::default().fg(theme::DIM)),
         status_row,
     );
+}
+
+/// News feed height: small fixed band so the order-book/investor row keeps the
+/// vertical slack. Shrinks further when the AI panel is open.
+fn news_height(total: u16, show_ai: bool) -> u16 {
+    if show_ai {
+        4
+    } else if total >= 48 {
+        9
+    } else if total >= 38 {
+        6
+    } else {
+        4
+    }
 }
 
 fn render_header(
@@ -314,30 +333,60 @@ fn render_header(
 ) {
     let lines = if let Some(d) = detail {
         let color = theme::change_color(d.change_pct);
+        let sign = if d.change >= 0.0 { "+" } else { "" };
+        let mut price_line = vec![
+            Span::styled(
+                format!(" {} ", format::money(d.price, d.currency)),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{} {}{} ({}{:.2}%)",
+                    if d.change >= 0.0 { "▲" } else { "▼" },
+                    sign,
+                    format::money(d.change, d.currency),
+                    sign,
+                    d.change_pct,
+                ),
+                Style::default().fg(color),
+            ),
+            Span::styled(
+                format!("   Vol: {}", format_volume(d.volume)),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ];
+        // Volume-vs-average ratio, color-coded like the Python original.
+        if d.avg_volume > 0 {
+            let ratio = d.volume as f64 / d.avg_volume as f64;
+            let ratio_color = if ratio >= 1.5 {
+                theme::UP
+            } else if ratio >= 1.0 {
+                theme::ACCENT
+            } else {
+                theme::DIM
+            };
+            price_line.push(Span::styled(
+                format!(" ({ratio:.1}x avg)"),
+                Style::default().fg(ratio_color),
+            ));
+        }
+        let sector = if d.sector.is_empty() {
+            String::new()
+        } else {
+            format!("  Sector: {}", d.sector)
+        };
         vec![
             Line::from(vec![
                 Span::styled(
                     format!(" {}  {}", d.symbol, d.name),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(format!("  |  Market: {}", d.market.display())),
-            ]),
-            Line::from(vec![
                 Span::styled(
-                    format!(" {} ", format::money(d.price, d.currency)),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    format!("{sector}  |  Market: {}", d.market.display()),
+                    Style::default().fg(theme::DIM),
                 ),
-                Span::styled(
-                    format!(
-                        "{} {} ({})",
-                        if d.change >= 0.0 { "▲" } else { "▼" },
-                        format::money(d.change, d.currency),
-                        d.change_pct
-                    ),
-                    Style::default().fg(color),
-                ),
-                Span::raw(format!("  Vol: {}", format_volume(d.volume))),
             ]),
+            Line::from(price_line),
         ]
     } else {
         vec![
@@ -547,49 +596,111 @@ fn render_info_and_investors(
     detail: Option<&StockDetail>,
     rows: &[InvestorRow],
 ) {
-    let chunks = layout::vertical(area, &[Constraint::Length(4), Constraint::Min(5)]);
-    let text = if let Some(d) = detail {
+    // Top: two side-by-side info boxes (Price Info | Trading Info), matching the
+    // Python original. Bottom: investor-trend table grows to fill the slack.
+    let chunks = layout::vertical(area, &[Constraint::Length(6), Constraint::Min(5)]);
+    let info_cols = layout::horizontal(
+        chunks[0],
+        &[Constraint::Percentage(50), Constraint::Percentage(50)],
+    );
+
+    let labeled = |label: &str, value: String, color: Option<ratatui::style::Color>| {
+        let value_style = match color {
+            Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
+            None => Style::default().add_modifier(Modifier::BOLD),
+        };
+        Line::from(vec![
+            Span::styled(format!(" {label}: "), Style::default().fg(theme::DIM)),
+            Span::styled(value, value_style),
+        ])
+    };
+
+    let (price_lines, trading_lines) = if let Some(d) = detail {
         let fmt = |v| match d.currency {
             Currency::Krw => format_number(v, 0),
             Currency::Usd => format!("${}", format_number(v, 2)),
         };
-        vec![
-            Line::from(format!(
-                " Open {}  High {}  Low {}  Prev {}",
-                fmt(d.open_price),
-                fmt(d.high),
-                fmt(d.low),
-                fmt(d.prev_close)
-            )),
-            Line::from(format!(
-                " Day Range {} - {}  Sector {}",
-                fmt(d.low),
-                fmt(d.high),
-                if d.sector.is_empty() {
-                    "N/A"
-                } else {
-                    &d.sector
-                }
-            )),
-            Line::from(format!(
-                " 52W Low {}  High {}  Position {:.0}%",
-                fmt(d.week52_low),
-                fmt(d.week52_high),
-                d.week52_position() * 100.0
-            )),
-        ]
+        let price = vec![
+            labeled("Open", fmt(d.open_price), None),
+            labeled("High", fmt(d.high), Some(theme::UP)),
+            labeled("Low", fmt(d.low), Some(theme::DOWN)),
+            labeled("Prev Close", fmt(d.prev_close), None),
+        ];
+        let vol_ratio = if d.avg_volume > 0 {
+            let ratio = d.volume as f64 / d.avg_volume as f64;
+            let color = if ratio >= 1.5 {
+                theme::UP
+            } else if ratio >= 1.0 {
+                theme::ACCENT
+            } else {
+                theme::DIM
+            };
+            Some((ratio, color))
+        } else {
+            None
+        };
+        let volume_line = {
+            let mut spans = vec![
+                Span::styled(" Volume: ", Style::default().fg(theme::DIM)),
+                Span::styled(
+                    format_volume(d.volume),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if let Some((ratio, color)) = vol_ratio {
+                spans.push(Span::styled(
+                    format!(" ({ratio:.1}x avg)"),
+                    Style::default().fg(color),
+                ));
+            }
+            Line::from(spans)
+        };
+        let trading = vec![
+            volume_line,
+            labeled("Avg Vol", format_volume(d.avg_volume), None),
+            labeled(
+                "Day Range",
+                format!("{} - {}", fmt(d.low), fmt(d.high)),
+                None,
+            ),
+            labeled(
+                "52W Pos",
+                format!(
+                    "{:.0}% ({} - {})",
+                    d.week52_position() * 100.0,
+                    fmt(d.week52_low),
+                    fmt(d.week52_high)
+                ),
+                None,
+            ),
+        ];
+        (price, trading)
     } else {
-        vec![Line::from("Loading price info...")]
+        (
+            vec![Line::from(" Loading price info...")],
+            vec![Line::from("")],
+        )
     };
+
     frame.render_widget(
-        Paragraph::new(text).block(
+        Paragraph::new(price_lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Price Info ")
                 .border_style(Style::default().fg(theme::BORDER)),
         ),
-        chunks[0],
+        info_cols[0],
     );
+    frame.render_widget(
+        Paragraph::new(trading_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Trading Info ")
+                .border_style(Style::default().fg(theme::BORDER)),
+        ),
+        info_cols[1],
+    );
+
     let table_rows = rows.iter().map(|r| {
         Row::new([
             Cell::from(r.date.clone()),
