@@ -129,7 +129,39 @@ impl App {
         }
     }
 
+    /// True while a keystroke is text being typed into a field rather than a
+    /// shortcut: the symbol prompt, the market filter, or the news filter.
+    /// Used to gate CJK normalization so Korean can still be typed verbatim.
+    fn in_text_input(&self) -> bool {
+        match self.screens.last() {
+            Some(Screen::Dashboard(state)) => state.add_symbol_mode || state.search_mode,
+            Some(Screen::Detail(state)) => state.news_search_mode,
+            _ => false,
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
+        // ctrl-c quits from anywhere, ahead of every screen and overlay. It was
+        // only bound on the article screen, where it meant "go back" -- so the
+        // reflex that kills every other CLI either did nothing or did something
+        // else entirely, depending on where you were.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c' | 'C'))
+        {
+            self.running = false;
+            return;
+        }
+
+        // Under a Korean input source the shortcut keys arrive as jamo (`q` ->
+        // `ㅂ`). Rewrite them to the Latin key at the same physical position so
+        // shortcuts fire without switching the input source back -- but not
+        // while a text field owns the keyboard, where the jamo IS the input.
+        let key = if self.in_text_input() {
+            key
+        } else {
+            crate::keymap::normalize(key)
+        };
+
         if self.show_shortcuts {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => self.show_shortcuts = false,
@@ -285,9 +317,6 @@ impl App {
             Some(Screen::Article(state)) => match key.code {
                 KeyCode::Esc | KeyCode::Char('b') => pop_screen = true,
                 KeyCode::Char('r') => state.refresh(self.tx.clone()),
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    pop_screen = true
-                }
                 _ => {}
             },
             None => self.running = false,
@@ -605,4 +634,97 @@ fn render_inspector_modal(frame: &mut ratatui::Frame, area: Rect, profile: &Inst
         ),
         modal,
     );
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn jamo(ch: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+    }
+
+    /// App::new() kicks off the real network refresh through tokio::spawn, which
+    /// panics outside a runtime and would put these tests on the network. This
+    /// builds the same state without that first fetch: the key handler never
+    /// reads it.
+    fn test_app() -> App {
+        let (tx, rx) = mpsc::unbounded_channel();
+        App {
+            screens: vec![Screen::Dashboard(DashboardState::new())],
+            running: true,
+            tx,
+            rx,
+            last_indicators: Vec::new(),
+            show_shortcuts: false,
+            inspector_profile: None,
+        }
+    }
+
+    fn dashboard(app: &mut App) -> &mut DashboardState {
+        match app.screens.last_mut() {
+            Some(Screen::Dashboard(state)) => state,
+            _ => panic!("expected the dashboard screen"),
+        }
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_the_dashboard() {
+        let mut app = test_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn ctrl_c_quits_out_of_a_text_field() {
+        // The symbol prompt swallows ordinary characters; ctrl-c must still
+        // escape the whole app rather than being typed into the field.
+        let mut app = test_app();
+        dashboard(&mut app).begin_add_symbol();
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn ctrl_c_quits_out_of_an_overlay() {
+        let mut app = test_app();
+        app.show_shortcuts = true;
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn hangul_q_quits_like_latin_q() {
+        // `ㅂ` sits on the physical `q` key under the 2-set Korean layout.
+        let mut app = test_app();
+        app.handle_key(jamo('ㅂ'));
+        assert!(!app.running);
+    }
+
+    #[test]
+    fn hangul_toggles_the_heatmap_like_latin_m() {
+        // `ㅡ` is the physical `m`, which toggles the heatmap.
+        let mut app = test_app();
+        let before = dashboard(&mut app).heatmap_view;
+        app.handle_key(jamo('ㅡ'));
+        assert_ne!(dashboard(&mut app).heatmap_view, before);
+    }
+
+    #[test]
+    fn the_symbol_prompt_keeps_hangul_verbatim() {
+        let mut app = test_app();
+        dashboard(&mut app).begin_add_symbol();
+        app.handle_key(jamo('ㅂ'));
+        assert_eq!(dashboard(&mut app).add_symbol_input, "ㅂ");
+    }
+
+    #[test]
+    fn the_market_filter_keeps_hangul_verbatim() {
+        let mut app = test_app();
+        dashboard(&mut app).begin_search();
+        app.handle_key(jamo('ㅁ'));
+        // The US tab is the default focus, so the query lands in slot 0.
+        assert_eq!(dashboard(&mut app).market_searches[0], "ㅁ");
+    }
 }

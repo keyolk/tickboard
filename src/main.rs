@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod error;
+mod keymap;
 mod models;
 mod services;
 mod tasks;
